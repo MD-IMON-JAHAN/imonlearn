@@ -10,26 +10,38 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 import os
+import sys
 from pathlib import Path
+import dj_database_url
+import subprocess
 
-
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
+# Build paths inside the project like this: BASE_DIR / 'subdir'
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# ======================
+# AUTOMATION SETUP
+# ======================
+def run_automations():
+    """Run deployment automations when in production"""
+    if 'render' in os.environ.get('RENDER', '').lower() or not DEBUG:
+        # Auto-create SQLite database if it doesn't exist
+        if not os.path.exists(BASE_DIR / 'db.sqlite3'):
+            open(BASE_DIR / 'db.sqlite3', 'w').close()
+        
+        # Auto-run collectstatic
+        subprocess.run(['python', 'manage.py', 'collectstatic', '--noinput'], check=False)
+        
+        # For PostgreSQL on Render (will auto-use if DATABASE_URL exists)
+        if os.environ.get('DATABASE_URL'):
+            subprocess.run(['python', 'manage.py', 'migrate', '--noinput'], check=False)
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
-
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-ik-jy-j%k+fi^px^ft-stfj=lk-95%#o_hvk8-^%dcn*!)na#7'
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
+# ======================
+# CORE SETTINGS
+# ======================
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-auto-key-' + os.urandom(32).hex())
+DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 ALLOWED_HOSTS = ['*']
-
-
-# Application definition
+CSRF_TRUSTED_ORIGINS = ['https://*.onrender.com']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -38,12 +50,14 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    "courses",
+    'whitenoise.runserver_nostatic',
+    'courses',
     'rest_framework',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -53,7 +67,28 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'weblab.urls'
+WSGI_APPLICATION = 'weblab.wsgi.application'
 
+# ======================
+# DATABASE CONFIGURATION
+# ======================
+DATABASES = {
+    'default': dj_database_url.config(
+        default=f'sqlite:///{BASE_DIR}/db.sqlite3',
+        conn_max_age=600,
+        engine='django.db.backends.sqlite3' if not os.environ.get('DATABASE_URL') else None
+    )
+}
+
+# Auto-create tables for SQLite
+if 'sqlite3' in DATABASES['default']['ENGINE'] and not os.path.exists(DATABASES['default']['NAME']):
+    from django.db import connections
+    for name in ['default']:
+        connections[name].ensure_connection()
+
+# ======================
+# TEMPLATES
+# ======================
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -70,74 +105,49 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'weblab.wsgi.application'
+# ======================
+# STATIC & MEDIA FILES
+# ======================
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# Database
-# https://docs.djangoproject.com/en/5.1/ref/settings/#databases
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
-
-
-# Password validation
-# https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
-
-AUTH_PASSWORD_VALIDATORS = [
-    {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
-]
-
-
-# Internationalization
-# https://docs.djangoproject.com/en/5.1/topics/i18n/
-
+# ======================
+# OTHER CONFIGURATIONS
+# ======================
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 LANGUAGE_CODE = 'en-us'
-
 TIME_ZONE = 'UTC'
-
 USE_I18N = True
-
 USE_TZ = True
 
-
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.1/howto/static-files/
-
-STATIC_URL = 'static/'
-STATICFILES_DIRS=[
-    os.path.join(BASE_DIR,'static'),
-]
-# Default primary key field type
-# https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
-
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-MEDIA_URL='/media/'
-MEDIA_ROOT=os.path.join(BASE_DIR,'media')
-
-
-# Redirect users to the homepage after login
+# Authentication
 LOGIN_REDIRECT_URL = '/'
-
-# Redirect users to the login page after logout
 LOGOUT_REDIRECT_URL = '/login/'
-
 LOGIN_URL = '/login/'
 
+# Email
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 DEFAULT_FROM_EMAIL = 'noreply@edulearn.com'
 
+# ======================
+# PRODUCTION SECURITY
+# ======================
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+# ======================
+# RUN AUTOMATIONS
+# ======================
+if 'runserver' not in sys.argv and 'test' not in sys.argv:
+    run_automations()
