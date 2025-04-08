@@ -12,142 +12,88 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 import os
 import sys
 from pathlib import Path
-import dj_database_url
-import subprocess
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'
+# ======================
+# AUTOMATIC BOOTSTRAP
+# ======================
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# ======================
-# AUTOMATION SETUP
-# ======================
-def run_automations():
-    """Run deployment automations when in production"""
-    if 'render' in os.environ.get('RENDER', '').lower() or not DEBUG:
-        # Auto-create SQLite database if it doesn't exist
-        if not os.path.exists(BASE_DIR / 'db.sqlite3'):
-            open(BASE_DIR / 'db.sqlite3', 'w').close()
-        
-        # Auto-run collectstatic
-        subprocess.run(['python', 'manage.py', 'collectstatic', '--noinput'], check=False)
-        
-        # For PostgreSQL on Render (will auto-use if DATABASE_URL exists)
-        if os.environ.get('DATABASE_URL'):
-            subprocess.run(['python', 'manage.py', 'migrate', '--noinput'], check=False)
+# Auto-create required files/directories
+os.makedirs(BASE_DIR / 'staticfiles', exist_ok=True)
+os.makedirs(BASE_DIR / 'media', exist_ok=True)
+if not (BASE_DIR / 'db.sqlite3').exists():
+    (BASE_DIR / 'db.sqlite3').touch()
 
 # ======================
-# CORE SETTINGS
+# ESSENTIAL SETTINGS
 # ======================
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-auto-key-' + os.urandom(32).hex())
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-' + os.urandom(20).hex())
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 ALLOWED_HOSTS = ['*']
-CSRF_TRUSTED_ORIGINS = ['https://*.onrender.com']
 
+# Minimal app configuration
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
     'django.contrib.staticfiles',
-    'whitenoise.runserver_nostatic',
-    'courses',
-    'rest_framework',
+    'courses',  # Your core app
 ]
 
+# Stripped-down middleware
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'weblab.urls'
-WSGI_APPLICATION = 'weblab.wsgi.application'
-
-# ======================
-# DATABASE CONFIGURATION
-# ======================
+# Database - SQLite only (lightest option)
 DATABASES = {
-    'default': dj_database_url.config(
-        default=f'sqlite:///{BASE_DIR}/db.sqlite3',
-        conn_max_age=600,
-        engine='django.db.backends.sqlite3' if not os.environ.get('DATABASE_URL') else None
-    )
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
 }
 
-# Auto-create tables for SQLite
-if 'sqlite3' in DATABASES['default']['ENGINE'] and not os.path.exists(DATABASES['default']['NAME']):
-    from django.db import connections
-    for name in ['default']:
-        connections[name].ensure_connection()
-
-# ======================
-# TEMPLATES
-# ======================
-TEMPLATES = [
-    {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.debug',
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
-            ],
-        },
-    },
-]
-
-# ======================
-# STATIC & MEDIA FILES
-# ======================
+# Static files (simplest possible config)
 STATIC_URL = '/static/'
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_DIRS = [BASE_DIR / 'static'] if (BASE_DIR / 'static').exists() else []
 
 # ======================
-# OTHER CONFIGURATIONS
+# AUTO-CONFIGURATION
 # ======================
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
-USE_I18N = True
-USE_TZ = True
-
-# Authentication
-LOGIN_REDIRECT_URL = '/'
-LOGOUT_REDIRECT_URL = '/login/'
-LOGIN_URL = '/login/'
-
-# Email
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-DEFAULT_FROM_EMAIL = 'noreply@edulearn.com'
+if 'runserver' not in sys.argv:
+    # Automatic static file collection
+    if not list(STATIC_ROOT.glob('*')):
+        from django.core.management import execute_from_command_line
+        execute_from_command_line([sys.argv[0], 'collectstatic', '--noinput'])
+    
+    # Auto-create database tables
+    if not (BASE_DIR / 'db.sqlite3').stat().st_size:
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS django_migrations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    app VARCHAR(255) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    applied DATETIME NOT NULL
+                )
+            """)
 
 # ======================
-# PRODUCTION SECURITY
+# RUNTIME OPTIMIZATIONS
+# ======================
+# Disable unused systems
+DATABASES['default']['OPTIONS'] = {'timeout': 20}  # Faster SQLite timeouts
+os.environ['PYTHONOPTIMIZE'] = '1'  # Basic bytecode optimization
+
+# Gunicorn compatibility (will be ignored in dev)
+if 'gunicorn' in os.environ.get('SERVER_SOFTWARE', ''):
+    os.environ.setdefault('WEB_CONCURRENCY', '1')
+    os.environ.setdefault('WORKER_CLASS', 'sync')
+    os.environ.setdefault('TIMEOUT', '90')
+
+# ======================
+# SECURITY (Production)
 # ======================
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    SECURE_HSTS_SECONDS = 31536000
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
-
-# ======================
-# RUN AUTOMATIONS
-# ======================
-if 'runserver' not in sys.argv and 'test' not in sys.argv:
-    run_automations()
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
